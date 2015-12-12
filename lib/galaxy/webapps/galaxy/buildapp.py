@@ -24,8 +24,6 @@ from galaxy import util
 from galaxy.util import asbool
 from galaxy.util.properties import load_app_properties
 
-from galaxy import eggs
-eggs.require('Paste')
 from paste import httpexceptions
 
 import logging
@@ -73,11 +71,14 @@ def paste_app_factory( global_conf, **kwargs ):
     atexit.register( app.shutdown )
     # Create the universe WSGI application
     webapp = GalaxyWebApplication( app, session_cookie='galaxysession', name='galaxy' )
+
     webapp.add_ui_controllers( 'galaxy.webapps.galaxy.controllers', app )
     # Force /history to go to view of current
     webapp.add_route( '/history', controller='history', action='view' )
     # Force /activate to go to the controller
     webapp.add_route( '/activate', controller='user', action='activate' )
+    webapp.add_route( '/login', controller='root', action='login' )
+
     # These two routes handle our simple needs at the moment
     webapp.add_route( '/async/{tool_id}/{data_id}/{data_secret}', controller='async', action='index', tool_id=None, data_id=None, data_secret=None )
     webapp.add_route( '/{controller}/{action}', action='index' )
@@ -683,7 +684,6 @@ def wrap_in_middleware( app, global_conf, **local_conf ):
         # Interactive exception debugging, scary dangerous if publicly
         # accessible, if not enabled we'll use the regular error printing
         # middleware.
-        eggs.require( "WebError" )
         from weberror import evalexception
         app = evalexception.EvalException( app, conf,
                                            templating_formatters=build_template_error_formatters() )

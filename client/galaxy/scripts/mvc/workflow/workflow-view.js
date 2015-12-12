@@ -1,6 +1,169 @@
 define('mvc/workflow/workflow-globals', {});
-define(['utils/utils', 'mvc/workflow/workflow-globals', 'mvc/workflow/workflow-manager', 'mvc/workflow/workflow-canvas', 'mvc/workflow/workflow-node', 'mvc/tools/tools-form-workflow'],
-    function( Utils, Globals, Workflow, WorkflowCanvas, Node, ToolsForm ){
+define([
+    'utils/utils',
+    'mvc/workflow/workflow-globals',
+    'mvc/workflow/workflow-manager',
+    'mvc/workflow/workflow-canvas',
+    'mvc/workflow/workflow-node',
+    'mvc/tool/tools-form-workflow',
+    'utils/async-save-text',
+    'libs/toastr',
+    'ui/editable-text'
+], function( Utils, Globals, Workflow, WorkflowCanvas, Node, ToolsForm, async_save_text, Toastr ){
+
+// Reset tool search to start state.
+function reset_tool_search( initValue ) {
+    // Function may be called in top frame or in tool_menu_frame;
+    // in either case, get the tool menu frame.
+    var tool_menu_frame = $("#galaxy_tools").contents();
+    if (tool_menu_frame.length === 0) {
+        tool_menu_frame = $(document);
+    }
+
+    // Remove classes that indicate searching is active.
+    $(this).removeClass("search_active");
+    tool_menu_frame.find(".toolTitle").removeClass("search_match");
+
+    // Reset visibility of tools and labels.
+    tool_menu_frame.find(".toolSectionBody").hide();
+    tool_menu_frame.find(".toolTitle").show();
+    tool_menu_frame.find(".toolPanelLabel").show();
+    tool_menu_frame.find(".toolSectionWrapper").each( function() {
+        if ($(this).attr('id') !== 'recently_used_wrapper') {
+            // Default action.
+            $(this).show();
+        } else if ($(this).hasClass("user_pref_visible")) {
+            $(this).show();
+        }
+    });
+    tool_menu_frame.find("#search-no-results").hide();
+
+    // Reset search input.
+    tool_menu_frame.find("#search-spinner").hide();
+    if (initValue) {
+        var search_input = tool_menu_frame.find("#tool-search-query");
+        search_input.val("search tools");
+    }
+}
+
+NODE_ICONS = {
+    'tool': 'fa-wrench',
+    'data_input': 'fa-file-o',
+    'data_collection_input': 'fa-folder-o',
+    'pause': 'fa-pause'
+}
+
+add_node_icon = function($to_el, nodeType) {
+    var iconStyle = NODE_ICONS[nodeType];
+    if(iconStyle) {
+        var $icon = $('<i class="icon fa">&nbsp;</i>').addClass(iconStyle);
+        $to_el.before($icon);
+    }
+}
+
+
+// Really a shell of a real backbone view, but refactoring in the right
+// direction I think.
+EditorFormView = Backbone.View.extend({
+
+    initialize: function(options) {
+        this.options = Utils.merge(options, {});
+        var $el = $('<div/>'),
+            workflowView = options.workflowView,
+            node = options.node;
+
+        if(options.html) {
+            $el.html(options.html);
+        }
+        this.setElement($el);
+
+        if (node && node.id != 'no-node') {
+            $el.find('table:first').after(this._genericStepAttributesTemplate( node ));
+            var nodeType = node.type;
+            add_node_icon($el.find('.portlet-title-text'), nodeType);
+            var $titleText = $el.find(".portlet-title-text");
+            $titleText.data('last-value', $titleText.text());
+            $titleText.make_text_editable({
+                on_finish: function( newLabel ){
+                    var lastValue = $titleText.data("last-value");
+                    if( newLabel == lastValue ) {
+                        return;
+                    }
+
+                    var workflow = workflowView.workflow;
+                    if( workflow.attemptUpdateNodeLabel( node, newLabel ) ) {
+                        $el.find("input[name='label']").val(newLabel);
+                        $titleText.data("last-value", newLabel);
+                        $el.find('form').submit();
+                        if(newLabel == "") {
+                            // If label unset restore default name as title.
+                            $titleText.text(node.name);
+                        }
+                    } else {
+                        Toastr.warning("Step label " + newLabel + " already exists, cannot update label.");
+                        $titleText.text(lastValue);
+                    }
+                }
+            });
+            ($el.find( 'form' ).length > 0) && $el.find( 'form' ).ajaxForm( {
+                type: 'POST',
+                dataType: 'json',
+                success: function( data ) {
+                    workflowView.workflow.active_form_has_changes = false;
+                    node.update_field_data( data );
+                    workflowView.showWorkflowParameters();
+                },
+                beforeSubmit: function( data ) {
+                    data.push( { name: 'tool_state', value: node.tool_state } );
+                    data.push( { name: '_', value: 'true' } );
+                }
+            }).each( function() {
+                var form = this;
+                $(this).find('select[refresh_on_change="true"]').change( function() {
+                    $(form).submit();
+                });
+                $(this).find('input[refresh_on_change="true"]').change( function() {
+                    $(form).submit();
+                });
+                $(this).find('input, textarea, select').each( function() {
+                    $(this).bind('focus click', function() {
+                        workflowView.workflow.active_form_has_changes = true;
+                    });
+                });
+            });
+        }
+
+    },
+
+    _genericStepAttributesTemplate: function( node ) {
+        return  '<p>' +
+                    '<div class="metadataForm">' +
+                        '<div class="metadataFormTitle">' +
+                            'Edit Step Attributes' +
+                        '</div>' +
+                        this._annotationTemplate(node) +
+                    '</div>' +
+                '</p>';
+    },
+
+    _annotationTemplate: function( node ){
+        return '<div class="form-row">' +
+            '<label>Annotation / Notes:</label>' +
+            '<div style="margin-right: 10px;">' +
+                '<textarea name="annotation" rows="3" style="width: 100%">' +
+                    node.annotation +
+                '</textarea>' +
+                '<div class="toolParamHelp">' +
+                    'Add an annotation or notes to this step; annotations are available when a workflow is viewed.' +
+                '</div>' +
+            '</div>' +
+        '</div>';
+    },
+
+});
+
+
+
     // create form view
     return Backbone.View.extend({
         initialize: function(options) {
@@ -92,14 +255,6 @@ define(['utils/utils', 'mvc/workflow/workflow-globals', 'mvc/workflow/workflow-m
                 }
             };
 
-            if ( window.lt_ie_7 ) {
-                    window.show_modal(
-                        "Browser not supported",
-                        "Sorry, the workflow editor is not supported for IE6 and below."
-                    );
-                    return;
-            }
-
             // Init searching.
             $("#tool-search-query").click( function (){
                 $(this).focus();
@@ -177,13 +332,13 @@ define(['utils/utils', 'mvc/workflow/workflow-globals', 'mvc/workflow/workflow-m
 
             // get available datatypes for post job action options
             this.datatypes = JSON.parse($.ajax({
-                url     : galaxy_config.root + 'api/datatypes',
+                url     : Galaxy.root + 'api/datatypes',
                 async   : false
             }).responseText);
 
             // get datatype mapping options
             this.datatypes_mapping = JSON.parse($.ajax({
-                url     : galaxy_config.root + 'api/datatypes/mapping',
+                url     : Galaxy.root + 'api/datatypes/mapping',
                 async   : false
             }).responseText);
 
@@ -266,7 +421,7 @@ define(['utils/utils', 'mvc/workflow/workflow-globals', 'mvc/workflow/workflow-m
                         for (var ot_key in node.output_terminals){
                             var output = node.output_terminals[ot_key];
                             // if (node.workflow_outputs[node.id + "|" + output.name]){
-                            if ($.inArray(output.name, node.workflow_outputs) != -1){
+                            if (node.isWorkflowOutput(output.name)) {
                                 new_content += "<p>"+output.name +"<input type='checkbox' name='"+ node.id + "|" + output.name +"' checked /></p>";
                             }
                             else{
@@ -279,16 +434,12 @@ define(['utils/utils', 'mvc/workflow/workflow-globals', 'mvc/workflow/workflow-m
                 $("#output-fill-area").html(new_content);
                 $("#output-fill-area input").bind('click', function(){
                     var node_id = this.name.split('|')[0];
+                    var workflowNode = this.workflow.nodes[node_id];
                     var output_name = this.name.split('|')[1];
                     if (this.checked){
-                        if($.inArray(output_name, self.workflow.nodes[node_id].workflow_outputs) == -1){
-                            self.workflow.nodes[node_id].workflow_outputs.push(output_name);
-                        }//else it's already in the array.  Shouldn't happen, but forget it.
+                        workflowNode.addWorkflowOutput(output_name);
                     }else{
-                        while ($.inArray(output_name, self.workflow.nodes[node_id].workflow_outputs) != -1){
-                            var ia = $.inArray(output_name, self.workflow.nodes[node_id].workflow_outputs);
-                            self.workflow.nodes[node_id].workflow_outputs = self.workflow.nodes[node_id].workflow_outputs.slice(0,ia).concat( self.workflow.nodes[node_id].workflow_outputs.slice(ia+1) );
-                        }
+                        workflowNode.removeWorkflowOutput(output_name);
                     }
                     self.workflow.has_changes = true;
                 });
@@ -381,17 +532,15 @@ define(['utils/utils', 'mvc/workflow/workflow-globals', 'mvc/workflow/workflow-m
             });
 
             // Rename async.
-            if (window.async_save_text) {
-                async_save_text("workflow-name", "workflow-name", self.urls.rename_async, "new_name");
+            async_save_text("workflow-name", "workflow-name", self.urls.rename_async, "new_name");
 
-                // Tag async. Simply have the workflow edit element generate a click on the tag element to activate tagging.
-                $('#workflow-tag').click( function() {
-                    $('.tag-area').click();
-                    return false;
-                });
-                // Annotate async.
-                async_save_text("workflow-annotation", "workflow-annotation", self.urls.annotate_async, "new_annotation", 25, true, 4);
-            }
+            // Tag async. Simply have the workflow edit element generate a click on the tag element to activate tagging.
+            $('#workflow-tag').click( function() {
+                $('.tag-area').click();
+                return false;
+            });
+            // Annotate async.
+            async_save_text("workflow-annotation", "workflow-annotation", self.urls.annotate_async, "new_annotation", 25, true, 4);
         },
 
         // Global state for the whole workflow
@@ -419,12 +568,10 @@ define(['utils/utils', 'mvc/workflow/workflow-globals', 'mvc/workflow/workflow-m
             cc.css( { left: left, top: top } );
         },
 
-        // Add a new step to the workflow by tool id
-        add_node_for_tool: function ( id, title ) {
-            node = this.workflow.create_node( 'tool', title, id );
+        _moduleInitAjax: function(node, request_data) {
             $.ajax( {
                 url: this.urls.get_new_module_info,
-                data: { type: "tool", tool_id: id, "_": "true" },
+                data: request_data,
                 global: false,
                 dataType: "json",
                 success: function( data ) {
@@ -440,23 +587,21 @@ define(['utils/utils', 'mvc/workflow/workflow-globals', 'mvc/workflow/workflow-m
             });
         },
 
+        // Add a new step to the workflow by tool id
+        add_node_for_tool: function ( id, title ) {
+            node = this.workflow.create_node( 'tool', title, id );
+            this._moduleInitAjax(node, { type: "tool", content_id: id, "_": "true" });
+        },
+
+        // Add a new step to the workflow by tool id
+        add_node_for_subworkflow: function ( id, title ) {
+            node = this.workflow.create_node( 'subworkflow', title, id );
+            this._moduleInitAjax(node, { type: "subworkflow", subworkflow_id: id, "_": "true" });
+        },
+
         add_node_for_module: function ( type, title ) {
             node = this.workflow.create_node( type, title );
-            $.ajax( {
-                url: this.urls.get_new_module_info,
-                data: { type: type, "_": "true" },
-                dataType: "json",
-                success: function( data ) {
-                    node.init_field_data( data );
-                },
-                error: function( x, e ) {
-                    var m = "error loading field data"
-                    if ( x.status == 0 ) {
-                        m += ", server unavailable"
-                    }
-                    node.error( m );
-                }
-            });
+            this._moduleInitAjax(node, { type: type, "_": "true" });
         },
 
         // This function preloads how to display known pja's.
@@ -565,14 +710,21 @@ define(['utils/utils', 'mvc/workflow/workflow-globals', 'mvc/workflow/workflow-m
             // check if tool form already exists
             if ($container.find('#' + id).length == 0) {
                 var $el = $('<div id="' + id + '" class="' + cls + '"/>');
+                var formView = null;
                 if (node.type == 'tool' && Utils.isJSON(text)) {
                     var options = JSON.parse(text);
                     options.node = node;
                     options.datatypes = this.datatypes;
-                    $el.append((new ToolsForm.View(options)).$el);
+                    formView = new ToolsForm.View(options);
                 } else {
-                    $el.append(this._genericFormTemplate( text, node ));
+                    var options = {
+                        html: text,
+                        node: node,
+                        workflowView: this
+                    };
+                    formView = new EditorFormView(options);
                 }
+                $el.append(formView.$el);
                 $container.append($el);
             }
 
@@ -585,84 +737,33 @@ define(['utils/utils', 'mvc/workflow/workflow-globals', 'mvc/workflow/workflow-m
             $container.scrollTop();
         },
 
-        _genericFormTemplate: function ( text, node ) {
-            var $el = $('<div/>').html( text );
-            if (node && node.id != 'no-node') {
-                $el.find('.toolForm:first').after(this._genericStepAttributesTemplate( node ));
-                var self = this;
-                ($el.find( 'form' ).length > 0) && $el.find( 'form' ).ajaxForm( {
-                    type: 'POST',
-                    dataType: 'json',
-                    success: function( data ) {
-                        self.workflow.active_form_has_changes = false;
-                        node.update_field_data( data );
-                        self.showWorkflowParameters();
-                    },
-                    beforeSubmit: function( data ) {
-                        data.push( { name: 'tool_state', value: node.tool_state } );
-                        data.push( { name: '_', value: 'true' } );
-                    }
-                }).each( function() {
-                    var form = this;
-                    $(this).find('select[refresh_on_change="true"]').change( function() {
-                        $(form).submit();
-                    });
-                    $(this).find('input[refresh_on_change="true"]').change( function() {
-                        $(form).submit();
-                    });
-                    $(this).find('input, textarea, select').each( function() {
-                        $(this).bind('focus click', function() {
-                            self.workflow.active_form_has_changes = true;
-                        });
-                    });
-                });
-            }
-            return $el;
-        },
-
-        _genericStepAttributesTemplate: function( node ) {
-            return  '<p>' +
-                        '<div class="metadataForm">' +
-                            '<div class="metadataFormTitle">' +
-                                'Edit Step Attributes' +
-                            '</div>' +
-                            '<div class="form-row">' +
-                                '<label>Annotation / Notes:</label>' +
-                                '<div style="margin-right: 10px;">' +
-                                    '<textarea name="annotation" rows="3" style="width: 100%">' +
-                                        node.annotation +
-                                    '</textarea>' +
-                                    '<div class="toolParamHelp">' +
-                                        'Add an annotation or notes to this step; annotations are available when a workflow is viewed.' +
-                                    '</div>' +
-                                '</div>' +
-                            '</div>' +
-                        '</div>' +
-                    '</p>';
-        },
-
         isSubType: function ( child, parent ) {
             child = this.ext_to_type[child];
             parent = this.ext_to_type[parent];
             return ( this.type_to_type[child] ) && ( parent in this.type_to_type[child] );
         },
 
-        prebuildNode: function ( type, title_text, tool_id ) {
+        $newNodeElement: function(type, title_text) {
+            var $f = $("<div class='toolForm toolFormInCanvas'></div>");
+            var $title = $("<div class='toolFormTitle unselectable'><span class='nodeTitle'>" + title_text + "</div></div>" );
+            add_node_icon($title.find('.nodeTitle'), type);
+            $f.append( $title );
+            $f.css( "left", $(window).scrollLeft() + 20 );
+            $f.css( "top", $(window).scrollTop() + 20 );
+            var $b = $("<div class='toolFormBody'></div>");
+            $f.append($b);
+            return $f
+        },
+
+        prebuildNode: function ( type, title_text, content_id ) {
             var self = this;
-            var f = $("<div class='toolForm toolFormInCanvas'></div>");
-            var node = new Node( this, { element: f } );
+            var $f = this.$newNodeElement( type, title_text );
+            var node = new Node( this, { element: $f } );
             node.type = type;
-            if ( type == 'tool' ) {
-                node.tool_id = tool_id;
-            }
-            var title = $("<div class='toolFormTitle unselectable'>" + title_text + "</div>" );
-            f.append( title );
-            f.css( "left", $(window).scrollLeft() + 20 ); f.css( "top", $(window).scrollTop() + 20 );    
-            var b = $("<div class='toolFormBody'></div>");
-            var tmp = "<div><img height='16' align='middle' src='" + galaxy_config.root + "static/images/loading_small_white_bg.gif'/> loading tool info...</div>";
-            b.append( tmp );
+            node.content_id = content_id;
+            var tmp = "<div><img height='16' align='middle' src='" + Galaxy.root + "static/images/loading_small_white_bg.gif'/> loading tool info...</div>";
+            $f.find(".toolFormBody").append(tmp);
             node.form_html = tmp;
-            f.append( b );
             // Fix width to computed width
             // Now add floats
             var buttons = $("<div class='buttons' style='float: right;'></div>");
@@ -670,17 +771,17 @@ define(['utils/utils', 'mvc/workflow/workflow-globals', 'mvc/workflow/workflow-m
                 node.destroy();
             }));
             // Place inside container
-            f.appendTo( "#canvas-container" );
+            $f.appendTo( "#canvas-container" );
             // Position in container
             var o = $("#canvas-container").position();
             var p = $("#canvas-container").parent();
-            var width = f.width();
-            var height = f.height();
-            f.css( { left: ( - o.left ) + ( p.width() / 2 ) - ( width / 2 ), top: ( - o.top ) + ( p.height() / 2 ) - ( height / 2 ) } );
-            buttons.prependTo( title );
+            var width = $f.width();
+            var height = $f.height();
+            $f.css( { left: ( - o.left ) + ( p.width() / 2 ) - ( width / 2 ), top: ( - o.top ) + ( p.height() / 2 ) - ( height / 2 ) } );
+            buttons.prependTo( $f.find(".toolFormTitle" ) );
             width += ( buttons.width() + 10 );
-            f.css( "width", width );
-            $(f).bind( "dragstart", function() {
+            $f.css( "width", width );
+            $f.bind( "dragstart", function() {
                 self.workflow.activate_node( node );
             }).bind( "dragend", function() {
                 self.workflow.node_changed( this );

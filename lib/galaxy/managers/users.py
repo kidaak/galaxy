@@ -2,8 +2,6 @@
 Manager and Serializer for Users.
 """
 
-import pkg_resources
-pkg_resources.require( "SQLAlchemy >= 0.4" )
 import sqlalchemy
 
 from galaxy import model
@@ -65,6 +63,11 @@ class UserManager( base.ModelManager, deletable.PurgableManagerMixin ):
             permissions = self.app.config.new_user_dataset_access_role_default_private
             self.app.security_agent.user_set_default_permissions( user, default_access_private=permissions )
         return user
+
+    def delete(self, user):
+        user.deleted = True
+        self.session().add(user)
+        self.session().flush()
 
     def _error_on_duplicate_email( self, email ):
         """
@@ -232,7 +235,7 @@ class UserManager( base.ModelManager, deletable.PurgableManagerMixin ):
         if self.is_anonymous( user ):
             return False
         request_types = self.app.security_agent.get_accessible_request_types( trans, user )
-        return ( user.requests or request_types )
+        return bool( user.requests or request_types )
 
 
 class UserSerializer( base.ModelSerializer, deletable.PurgableSerializerMixin ):
@@ -251,13 +254,12 @@ class UserSerializer( base.ModelSerializer, deletable.PurgableSerializerMixin ):
         self.add_view( 'detailed', [
             # 'update_time',
             # 'create_time',
-
+            'is_admin',
             'total_disk_usage',
             'nice_total_disk_usage',
             'quota_percent',
-
-            # 'deleted',
-            # 'purged',
+            'deleted',
+            'purged',
             # 'active',
 
             # 'preferences',
@@ -281,8 +283,7 @@ class UserSerializer( base.ModelSerializer, deletable.PurgableSerializerMixin ):
             'quota_percent' : lambda i, k, **c: self.user_manager.quota( i ),
 
             'tags_used'     : lambda i, k, **c: self.user_manager.tags_used( i ),
-            # TODO: 'has_requests' is more apt
-            'requests'      : lambda i, k, trans=None, **c: self.user_manager.has_requests( i, trans )
+            'has_requests'  : lambda i, k, trans=None, **c: self.user_manager.has_requests( i, trans )
         })
 
 
@@ -302,7 +303,7 @@ class CurrentUserSerializer( UserSerializer ):
         # TODO: might be better as sep. Serializer class
         history = trans.history
         if not history:
-            raise exceptions.AuthenticationRequired( 'No history for anonymous user usage stats' )
+            return None
 
         usage = self.app.quota_agent.get_usage( trans, history=trans.history )
         percent = self.app.quota_agent.get_percent( trans=trans, usage=usage )

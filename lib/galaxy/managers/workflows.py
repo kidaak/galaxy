@@ -2,11 +2,17 @@ from __future__ import absolute_import
 
 from collections import namedtuple
 import json
+import uuid
+
+from sqlalchemy import and_
 
 from galaxy import model
+from galaxy import util
 from galaxy import exceptions
 from galaxy.model.item_attrs import UsesAnnotations
 from galaxy.workflow import modules
+
+from .base import decode_id
 
 # For WorkflowContentManager
 from galaxy.util.sanitize_html import sanitize_html
@@ -25,6 +31,38 @@ class WorkflowsManager( object ):
 
     def __init__( self, app ):
         self.app = app
+
+    def get_stored_workflow( self, trans, workflow_id ):
+        """ Use a supplied ID (UUID or encoded stored workflow ID) to find
+        a workflow.
+        """
+        if util.is_uuid(workflow_id):
+            # see if they have passed in the UUID for a workflow that is attached to a stored workflow
+            workflow_uuid = uuid.UUID(workflow_id)
+            stored_workflow = trans.sa_session.query(trans.app.model.StoredWorkflow).filter( and_(
+                trans.app.model.StoredWorkflow.latest_workflow_id == trans.app.model.Workflow.id,
+                trans.app.model.Workflow.uuid == workflow_uuid
+            )).first()
+            if stored_workflow is None:
+                raise exceptions.ObjectNotFound( "Workflow not found: %s" % workflow_id )
+        else:
+            workflow_id = decode_id( self.app, workflow_id )
+            query = trans.sa_session.query( trans.app.model.StoredWorkflow )
+            stored_workflow = query.get( workflow_id )
+        if stored_workflow is None:
+            raise exceptions.ObjectNotFound( "No such workflow found." )
+        return stored_workflow
+
+    def get_stored_accessible_workflow( self, trans, workflow_id ):
+        stored_workflow = self.get_stored_workflow( trans, workflow_id )
+
+        # check to see if user has permissions to selected workflow
+        if stored_workflow.user != trans.user and not trans.user_is_admin():
+            if trans.sa_session.query(trans.app.model.StoredWorkflowUserShareAssociation).filter_by(user=trans.user, stored_workflow=stored_workflow).count() == 0:
+                message = "Workflow is not owned by or shared with current user"
+                raise exceptions.ItemAccessibilityException( message )
+
+        return stored_workflow
 
     def check_security( self, trans, has_workflow, check_ownership=True, check_accessible=True):
         """ check accessibility or ownership of workflows, storedworkflows, and
@@ -123,6 +161,9 @@ CreatedWorkflow = namedtuple("CreatedWorkflow", ["stored_workflow", "missing_too
 
 
 class WorkflowContentsManager(UsesAnnotations):
+
+    def __init__(self, app):
+        self.app = app
 
     def build_workflow_from_dict(
         self,
@@ -236,7 +277,8 @@ class WorkflowContentsManager(UsesAnnotations):
             steps.append( step )
             steps_by_external_id[ step_dict['id' ] ] = step
             if 'workflow_outputs' in step_dict:
-                for output_name in step_dict['workflow_outputs']:
+                for workflow_output in step_dict['workflow_outputs']:
+                    output_name = workflow_output["output_name"]
                     m = model.WorkflowOutput(workflow_step=step, output_name=output_name)
                     trans.sa_session.add(m)
             if step.tool_errors:
@@ -273,7 +315,7 @@ class WorkflowContentsManager(UsesAnnotations):
         if style == "editor":
             return self._workflow_to_dict_editor( trans, stored )
         elif style == "instance":
-            return self._workflow_to_dict_instance( trans, stored )
+            return self._workflow_to_dict_instance( stored )
         else:
             return self._workflow_to_dict_export( trans, stored )
 
@@ -330,6 +372,10 @@ class WorkflowContentsManager(UsesAnnotations):
                 # FIXME: Frontend should be able to handle workflow messages
                 #        as a dictionary not just the values
                 data['upgrade_messages'][step.order_index] = upgrade_message.values()
+                # Dispay version/tool_id changes
+                data['upgrade_messages'] = [step.order_index][module.tool.name] = "\n".join( module.version_changes )
+            elif (hasattr(module, "version_changes")) and (module.version_changes):
+                data['upgrade_messages'] = {step.order_index: {module.tool.name: "\n".join( module.version_changes )}}
             # Get user annotation.
             step_annotation = self.get_item_annotation_obj( trans.sa_session, trans.user, step )
             annotation_str = ""
@@ -344,7 +390,7 @@ class WorkflowContentsManager(UsesAnnotations):
             step_dict = {
                 'id': step.order_index,
                 'type': module.type,
-                'tool_id': module.get_tool_id(),
+                'tool_id': module.get_content_id(),
                 'name': module.get_name(),
                 'tool_state': module.get_state(),
                 'tooltip': module.get_tooltip( static_path=url_for( '/static' ) ),
@@ -387,11 +433,13 @@ class WorkflowContentsManager(UsesAnnotations):
                         action_arguments=pja.action_arguments
                     )
                 step_dict['post_job_actions'] = pja_dict
-                # workflow outputs
-                outputs = []
-                for output in step.workflow_outputs:
-                    outputs.append(output.output_name)
-                step_dict['workflow_outputs'] = outputs
+
+            # workflow outputs
+            outputs = []
+            for output in step.workflow_outputs:
+                outputs.append({"output_name": output.output_name})
+            step_dict['workflow_outputs'] = outputs
+
             # Encode input connections as dictionary
             input_conn_dict = {}
             for conn in input_connections:
@@ -445,7 +493,7 @@ class WorkflowContentsManager(UsesAnnotations):
             step_dict = {
                 'id': step.order_index,
                 'type': module.type,
-                'tool_id': module.get_tool_id(),
+                'tool_id': module.get_content_id(),
                 'tool_version': step.tool_version,
                 'name': module.get_name(),
                 'tool_state': module.get_state( secure=False ),
@@ -468,7 +516,14 @@ class WorkflowContentsManager(UsesAnnotations):
             # Data inputs
             step_dict['inputs'] = module.get_runtime_input_dicts( annotation_str )
             # User outputs
-            step_dict['user_outputs'] = []
+
+            workflow_outputs_dicts = []
+            for workflow_output in step.workflow_outputs:
+                workflow_output_dict = dict(
+                    output_name=workflow_output.output_name,
+                )
+                workflow_outputs_dicts.append(workflow_output_dict)
+            step_dict['workflow_outputs'] = workflow_outputs_dicts
 
             # All step outputs
             step_dict['outputs'] = []
@@ -496,8 +551,16 @@ class WorkflowContentsManager(UsesAnnotations):
             input_conn_dict = {}
             unique_input_names = set( [conn.input_name for conn in input_connections] )
             for input_name in unique_input_names:
-                input_conn_dict[ input_name ] = \
-                    [ dict( id=conn.output_step.order_index, output_name=conn.output_name ) for conn in input_connections if conn.input_name == input_name ]
+                input_conn_dicts = []
+                for conn in input_connections:
+                    if conn.input_name != input_name:
+                        continue
+                    input_conn = dict(
+                        id=conn.output_step.order_index,
+                        output_name=conn.output_name
+                    )
+                    input_conn_dicts.append(input_conn)
+                input_conn_dict[ input_name ] = input_conn_dicts
 
             # Preserve backward compatability. Previously Galaxy
             # assumed input connections would be dictionaries not
@@ -518,42 +581,41 @@ class WorkflowContentsManager(UsesAnnotations):
             data['steps'][step.order_index] = step_dict
         return data
 
-    def _workflow_to_dict_instance(self, trans, stored):
-        item = stored.to_dict( view='element', value_mapper={ 'id': trans.security.encode_id } )
+    def _workflow_to_dict_instance(self, stored):
+        encode = self.app.security.encode_id
+        sa_session = self.app.model.context
+        item = stored.to_dict( view='element', value_mapper={ 'id': encode } )
         workflow = stored.latest_workflow
         item['url'] = url_for('workflow', id=item['id'])
         item['owner'] = stored.user.username
         inputs = {}
-        for step in workflow.steps:
+        for step in workflow.input_steps:
             step_type = step.type
-            if step_type in ['data_input', 'data_collection_input']:
-                if step.tool_inputs and "name" in step.tool_inputs:
-                    label = step.tool_inputs['name']
-                elif step_type == "data_input":
-                    label = "Input Dataset"
-                elif step_type == "data_collection_input":
-                    label = "Input Dataset Collection"
-                else:
-                    raise ValueError("Invalid step_type %s" % step_type)
-                inputs[step.id] = {'label': label, 'value': ""}
+            if step.tool_inputs and "name" in step.tool_inputs:
+                label = step.tool_inputs['name']
+            elif step_type == "data_input":
+                label = "Input Dataset"
+            elif step_type == "data_collection_input":
+                label = "Input Dataset Collection"
             else:
-                pass
-                # Eventually, allow regular tool parameters to be inserted and modified at runtime.
-                # p = step.get_required_parameters()
+                raise ValueError("Invalid/unknown input step_type %s" % step_type)
+            inputs[step.id] = {'label': label, 'value': ""}
         item['inputs'] = inputs
-        item['annotation'] = self.get_item_annotation_str( trans.sa_session, stored.user, stored )
+        item['annotation'] = self.get_item_annotation_str( sa_session, stored.user, stored )
         steps = {}
         for step in workflow.steps:
-            steps[step.id] = {'id': step.id,
-                              'type': step.type,
-                              'tool_id': step.tool_id,
-                              'tool_version': step.tool_version,
-                              'annotation': self.get_item_annotation_str( trans.sa_session, stored.user, step ),
-                              'tool_inputs': step.tool_inputs,
-                              'input_steps': {}}
+            step_type = step.type
+            step_dict = {'id': step.id,
+                         'type': step_type,
+                         'tool_id': step.tool_id,
+                         'tool_version': step.tool_version,
+                         'annotation': self.get_item_annotation_str( sa_session, stored.user, step ),
+                         'tool_inputs': step.tool_inputs,
+                         'input_steps': {}}
             for conn in step.input_connections:
-                steps[step.id]['input_steps'][conn.input_name] = {'source_step': conn.output_step_id,
-                                                                  'step_output': conn.output_name}
+                step_dict['input_steps'][conn.input_name] = {'source_step': conn.output_step_id,
+                                                             'step_output': conn.output_name}
+            steps[step.id] = step_dict
         item['steps'] = steps
         return item
 
@@ -603,6 +665,15 @@ class WorkflowContentsManager(UsesAnnotations):
             step.label = step_dict["label"]
         module = module_factory.from_dict( trans, step_dict, secure=secure )
         module.save_to_step( step )
+
+        workflow_outputs_dicts = step_dict.get("workflow_outputs", [])
+        for workflow_output_dict in workflow_outputs_dicts:
+            output_name = workflow_output_dict["output_name"]
+            workflow_output = model.WorkflowOutput(
+                step,
+                output_name,
+            )
+            step.workflow_outputs.append(workflow_output)
 
         annotation = step_dict[ 'annotation' ]
         if annotation:

@@ -9,3 +9,7 @@ documentation. These resources should be used together.
    :maxdepth: 3
 
    interactive_environments.rst
+
+   dependency_resolvers.rst
+
+   useful_scripts.rst

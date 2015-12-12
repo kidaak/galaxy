@@ -42,7 +42,7 @@ class WorkflowModule( object ):
     # ---- Creating modules from various representations ---------------------
 
     @classmethod
-    def new( Class, trans, tool_id=None ):
+    def new( Class, trans, content_id=None ):
         """
         Create a new instance of the module with default state
         """
@@ -73,7 +73,10 @@ class WorkflowModule( object ):
     def get_name( self ):
         return self.name
 
-    def get_tool_id( self ):
+    def get_content_id( self ):
+        """ If this component has an identifier external to the step (such
+        as a tool or another workflow) return the identifier for that content.
+        """
         return None
 
     def get_tooltip( self, static_path='' ):
@@ -81,7 +84,7 @@ class WorkflowModule( object ):
 
     # ---- Configuration time -----------------------------------------------
 
-    def get_state( self ):
+    def get_state( self, secure=True ):
         """ Return a serializable representation of the persistable state of
         the step - for tools it DefaultToolState.encode returns a string and
         for simpler module types a json description is dumped out.
@@ -132,7 +135,7 @@ class WorkflowModule( object ):
 
     # ---- Run time ---------------------------------------------------------
 
-    def get_runtime_inputs( self ):
+    def get_runtime_inputs( self, **kwds ):
         """ Used internally by modules and when displaying inputs in workflow
         editor and run workflow templates.
 
@@ -194,9 +197,10 @@ class WorkflowModule( object ):
 class SimpleWorkflowModule( WorkflowModule ):
 
     @classmethod
-    def new( Class, trans, tool_id=None ):
+    def new( Class, trans, content_id=None ):
         module = Class( trans )
         module.state = Class.default_state()
+        module.label = None
         return module
 
     @classmethod
@@ -204,12 +208,14 @@ class SimpleWorkflowModule( WorkflowModule ):
         module = Class( trans )
         state = loads( d["tool_state"] )
         module.recover_state( state )
+        module.label = d.get("label", None) or None
         return module
 
     @classmethod
     def from_workflow_step( Class, trans, step ):
         module = Class( trans )
         module.recover_state( step.tool_inputs )
+        module.label = step.label
         return module
 
     @classmethod
@@ -222,6 +228,7 @@ class SimpleWorkflowModule( WorkflowModule ):
     def save_to_step( self, step ):
         step.type = self.type
         step.tool_id = None
+        step.tool_version = None
         step.tool_inputs = self.state
 
     def get_state( self, secure=True ):
@@ -501,12 +508,13 @@ class ToolModule( WorkflowModule ):
             self.errors[ tool_id ] = 'Tool unavailable'
 
     @classmethod
-    def new( Class, trans, tool_id=None ):
-        module = Class( trans, tool_id )
+    def new( Class, trans, content_id=None ):
+        module = Class( trans, content_id )
         if module.tool is None:
-            error_message = "Attempted to create new workflow module for invalid tool_id, no tool with id - %s." % tool_id
+            error_message = "Attempted to create new workflow module for invalid tool_id, no tool with id - %s." % content_id
             raise Exception( error_message )
-        module.state = module.tool.new_state( trans, all_pages=True )
+        module.state = module.tool.new_state( trans )
+        module.label = None
         return module
 
     @classmethod
@@ -515,9 +523,14 @@ class ToolModule( WorkflowModule ):
         tool_version = str( d.get( 'tool_version', None ) )
         module = Class( trans, tool_id, tool_version=tool_version )
         module.state = galaxy.tools.DefaultToolState()
+        module.label = d.get("label", None) or None
         if module.tool is not None:
+            message = ""
+            if tool_id != module.tool_id:
+                message += "The tool (id '%s') specified in this step is not available. Using the tool with id %s instead." % (tool_id, module.tool_id)
             if d.get('tool_version', 'Unspecified') != module.get_tool_version():
-                message = "%s: using version '%s' instead of version '%s' indicated in this workflow." % ( tool_id, d.get( 'tool_version', 'Unspecified' ), module.get_tool_version() )
+                message += "%s: using version '%s' instead of version '%s' specified in this workflow." % ( tool_id, d.get( 'tool_version', 'Unspecified' ), module.get_tool_version() )
+            if message:
                 log.debug(message)
                 module.version_changes.append(message)
             if d[ "tool_state" ]:
@@ -544,13 +557,18 @@ class ToolModule( WorkflowModule ):
                 return module_factory.from_dict(trans, loads(step.config), secure=False)
             tool_version = step.tool_version
             module = Class( trans, tool_id, tool_version=tool_version )
+            message = ""
+            if step.tool_id != module.tool_id:
+                message += "The tool with the id '%s' is not available. Using the tool with id '%s' instead." % (step.tool_id, module.tool_id)
             if step.tool_version and (step.tool_version != module.tool.version):
-                message = "%s: using version '%s' instead of version '%s' indicated in this workflow." % (tool_id, module.tool.version, step.tool_version)
+                message += "%s: using version '%s' instead of version '%s' specified in this workflow." % (tool_id, module.tool.version, step.tool_version)
+            if message:
                 log.debug(message)
                 module.version_changes.append(message)
             module.recover_state( step.tool_inputs )
             module.errors = step.tool_errors
             module.workflow_outputs = step.workflow_outputs
+            module.label = step.label or None
             pjadict = {}
             for pja in step.post_job_actions:
                 pjadict[pja.action_type] = pja
@@ -614,7 +632,7 @@ class ToolModule( WorkflowModule ):
             return self.tool.name
         return 'unavailable'
 
-    def get_tool_id( self ):
+    def get_content_id( self ):
         return self.tool_id
 
     def get_tool_version( self ):
@@ -726,6 +744,7 @@ class ToolModule( WorkflowModule ):
         # set. We also need to make sure all datasets have a dummy value
         # for dependencies to see
 
+        self.label = incoming.get("label", None) or None
         self.post_job_actions = ActionBox.handle_incoming(incoming)
 
         make_runtime_key = incoming.get( 'make_runtime', None )
@@ -942,13 +961,13 @@ class WorkflowModuleFactory( object ):
     def __init__( self, module_types ):
         self.module_types = module_types
 
-    def new( self, trans, type, tool_id=None ):
+    def new( self, trans, type, content_id=None ):
         """
         Return module for type and (optional) tool_id intialized with
         new / default state.
         """
         assert type in self.module_types
-        return self.module_types[type].new( trans, tool_id )
+        return self.module_types[type].new( trans, content_id )
 
     def from_dict( self, trans, d, **kwargs ):
         """
@@ -983,26 +1002,36 @@ def load_module_sections( trans ):
     """ Get abstract description of the workflow modules this Galaxy instance
     is configured with.
     """
-    inputs_section = {
+    module_sections = {}
+    module_sections['inputs'] = {
         "name": "inputs",
         "title": "Inputs",
         "modules": [
-            {"name": "data_input", "title": "Input Dataset", "description": "Input dataset"},
-            {"name": "data_collection_input", "title": "Input Dataset Collection", "description": "Input dataset collection"},
+            {
+                "name": "data_input",
+                "title": "Input Dataset",
+                "description": "Input dataset"
+            },
+            {
+                "name": "data_collection_input",
+                "title": "Input Dataset Collection",
+                "description": "Input dataset collection"
+            },
         ],
     }
-    module_sections = [
-        inputs_section
-    ]
+
     if trans.app.config.enable_beta_workflow_modules:
-        experimental_modules = {
+        module_sections['experimental'] = {
             "name": "experimental",
             "title": "Experimental",
             "modules": [
-                {"name": "pause", "title": "Pause Workflow for Dataset Review", "description": "Pause for Review"},
+                {
+                    "name": "pause",
+                    "title": "Pause Workflow for Dataset Review",
+                    "description": "Pause for Review"
+                },
             ],
         }
-        module_sections.append(experimental_modules)
 
     return module_sections
 
@@ -1046,13 +1075,7 @@ class WorkflowModuleInjector(object):
         step.upgrade_messages = {}
 
         # Make connection information available on each step by input name.
-        input_connections_by_name = {}
-        for conn in step.input_connections:
-            input_name = conn.input_name
-            if input_name not in input_connections_by_name:
-                input_connections_by_name[input_name] = []
-            input_connections_by_name[input_name].append(conn)
-        step.input_connections_by_name = input_connections_by_name
+        step.setup_input_connections_by_name()
 
         # Populate module.
         module = step.module = module_factory.from_workflow_step( trans, step )

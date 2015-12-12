@@ -6,11 +6,8 @@ from datetime import date
 from time import gmtime
 from time import strftime
 
-from galaxy import eggs
-eggs.require( 'mercurial' )
 from mercurial import mdiff
 from mercurial import patch
-eggs.require('SQLAlchemy')
 from sqlalchemy import and_, false, null, true
 
 import tool_shed.grids.repository_grids as repository_grids
@@ -1684,6 +1681,14 @@ class RepositoryController( BaseUIController, ratings_util.ItemRatings ):
                      includes_tool_dependencies=includes_tool_dependencies,
                      repo_info_dicts=repo_info_dicts )
 
+    @web.expose
+    def get_repository_type( self, trans, **kwd ):
+        """Given a repository name and owner, return the type."""
+        repository_name = kwd[ 'name' ]
+        repository_owner = kwd[ 'owner' ]
+        repository = suc.get_repository_by_name_and_owner( trans.app, repository_name, repository_owner )
+        return str( repository.type )
+
     @web.json
     def get_required_repo_info_dict( self, trans, encoded_str=None ):
         """
@@ -1750,6 +1755,22 @@ class RepositoryController( BaseUIController, ratings_util.ItemRatings ):
             tool_dependencies_config_file.close()
             return contents
         return ''
+
+    @web.json
+    def get_tool_dependency_definition_metadata( self, trans, **kwd ):
+        """
+        Given a repository name and ownerof a repository whose type is
+        tool_dependency_definition, return the current metadata.
+        """
+        repository_name = kwd[ 'name' ]
+        repository_owner = kwd[ 'owner' ]
+        repository = suc.get_repository_by_name_and_owner( trans.app, repository_name, repository_owner )
+        encoded_id = trans.app.security.encode_id( repository.id )
+        repository_tip = repository.tip( trans.app )
+        repository_metadata = suc.get_repository_metadata_by_changeset_revision( trans.app,
+                                                                                 encoded_id,
+                                                                                 repository_tip )
+        return repository_metadata.metadata
 
     @web.expose
     def get_tool_versions( self, trans, **kwd ):

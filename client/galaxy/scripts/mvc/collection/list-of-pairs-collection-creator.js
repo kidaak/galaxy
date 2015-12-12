@@ -6,6 +6,8 @@ define([
     "utils/localization",
     "ui/hoverhighlight"
 ], function( levenshteinDistance, naturalSort, LIST_COLLECTION_CREATOR, baseMVC, _l ){
+
+var logNamespace = 'collections';
 /* ============================================================================
 TODO:
 
@@ -21,6 +23,7 @@ currPanel.once( 'rendered', function(){
 /** A view for paired datasets in the collections creator.
  */
 var PairView = Backbone.View.extend( baseMVC.LoggableMixin ).extend({
+    _logNamespace : logNamespace,
 
     tagName     : 'li',
     className   : 'dataset paired',
@@ -185,6 +188,7 @@ function autoPairFnBuilder( options ){
 /** An interface for building collections of paired datasets.
  */
 var PairedCollectionCreator = Backbone.View.extend( baseMVC.LoggableMixin ).extend({
+    _logNamespace : logNamespace,
 
     className: 'list-of-pairs-collection-creator collection-creator flex-row-container',
 
@@ -568,8 +572,7 @@ var PairedCollectionCreator = Backbone.View.extend( baseMVC.LoggableMixin ).exte
      */
     createList : function( name ){
         var creator = this,
-            root = ( window.Galaxy && Galaxy.options.root )? Galaxy.options.root : '/',
-            url = root + 'api/histories/' + this.historyId + '/contents/dataset_collections';
+            url = Galaxy.root + 'api/histories/' + this.historyId + '/contents/dataset_collections';
 
         //TODO: use ListPairedCollection.create()
         var ajaxData = {

@@ -8,8 +8,6 @@ import urllib2
 
 from sqlalchemy import and_
 from sqlalchemy.sql import expression
-from galaxy import eggs
-eggs.require( "MarkupSafe" )
 from markupsafe import escape
 
 from tool_shed.util import common_util
@@ -398,7 +396,7 @@ class WorkflowController( BaseUIController, SharableMixin, UsesStoredWorkflowMix
         """Imports a workflow shared by other users."""
         # Set referer message.
         referer = trans.request.referer
-        if referer is not "":
+        if referer:
             referer_message = "<a href='%s'>return to the previous page</a>" % escape(referer)
         else:
             referer_message = "<a href='%s'>go to Galaxy's start page</a>" % url_for( '/' )
@@ -615,7 +613,7 @@ class WorkflowController( BaseUIController, SharableMixin, UsesStoredWorkflowMix
         return trans.fill_template( "workflow/editor.mako", stored=stored, annotation=self.get_item_annotation_str( trans.sa_session, trans.user, stored ) )
 
     @web.json
-    def editor_form_post( self, trans, type='tool', tool_id=None, annotation=None, **incoming ):
+    def editor_form_post( self, trans, type='tool', tool_id=None, annotation=None, label=None, **incoming ):
         """
         Accepts a tool state and incoming values, and generates a new tool
         form and some additional information, packed into a json dictionary.
@@ -627,12 +625,14 @@ class WorkflowController( BaseUIController, SharableMixin, UsesStoredWorkflowMix
         module = module_factory.from_dict( trans, {
             'type': type,
             'tool_id': tool_id,
-            'tool_state': tool_state
+            'tool_state': tool_state,
+            'label': label or None,
         } )
         # update module state
         module.update_state( incoming )
         if type == 'tool':
             return {
+                'label': module.label,
                 'tool_state': module.get_state(),
                 'data_inputs': module.get_data_inputs(),
                 'data_outputs': module.get_data_outputs(),
@@ -643,6 +643,7 @@ class WorkflowController( BaseUIController, SharableMixin, UsesStoredWorkflowMix
             }
         else:
             return {
+                'label': module.label,
                 'tool_state': module.get_state(),
                 'data_inputs': module.get_data_inputs(),
                 'data_outputs': module.get_data_outputs(),
@@ -666,7 +667,7 @@ class WorkflowController( BaseUIController, SharableMixin, UsesStoredWorkflowMix
         return {
             'type': module.type,
             'name': module.get_name(),
-            'tool_id': module.get_tool_id(),
+            'tool_id': module.get_content_id(),
             'tool_state': module.get_state(),
             'tool_model': tool_model,
             'tooltip': module.get_tooltip( static_path=url_for( '/static' ) ),
@@ -685,7 +686,7 @@ class WorkflowController( BaseUIController, SharableMixin, UsesStoredWorkflowMix
         """
         trans.workflow_building_mode = True
         stored = self.get_stored_workflow( trans, id, check_ownership=True, check_accessible=False )
-        workflow_contents_manager = workflows.WorkflowContentsManager()
+        workflow_contents_manager = workflows.WorkflowContentsManager(trans.app)
         return workflow_contents_manager.workflow_to_dict( trans, stored, style="editor" )
 
     @web.json
@@ -695,7 +696,7 @@ class WorkflowController( BaseUIController, SharableMixin, UsesStoredWorkflowMix
         """
         # Get the stored workflow
         stored = self.get_stored_workflow( trans, id )
-        workflow_contents_manager = workflows.WorkflowContentsManager()
+        workflow_contents_manager = workflows.WorkflowContentsManager(trans.app)
         try:
             workflow, errors = workflow_contents_manager.update_workflow_from_dict(
                 trans,

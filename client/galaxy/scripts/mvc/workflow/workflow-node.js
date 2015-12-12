@@ -6,6 +6,23 @@ define(['mvc/workflow/workflow-view-node'], function( NodeView ) {
             this.input_terminals = {};
             this.output_terminals = {};
             this.tool_errors = {};
+            this.workflow_outputs = [];
+        },
+        getWorkflowOutput: function(outputName) {
+            return _.findWhere(this.workflow_outputs, {"output_name": outputName});
+        },
+        isWorkflowOutput: function(outputName) {
+            return this.getWorkflowOutput(outputName) != undefined;
+        },
+        removeWorkflowOutput: function(outputName) {
+            while(this.isWorkflowOutput(outputName)) {
+                this.workflow_outputs.splice(this.getWorkflowOutput(outputName), 1);
+            }
+        },
+        addWorkflowOutput: function(outputName) {
+            if(!this.isWorkflowOutput(outputName)){
+                this.workflow_outputs.push({"output_name": outputName});
+            }
         },
         connectedOutputTerminals: function() {
             return this._connectedTerminals( this.output_terminals );
@@ -107,6 +124,10 @@ define(['mvc/workflow/workflow-view-node'], function( NodeView ) {
             // Remove active class
             $(element).removeClass( "toolForm-active" );
         },
+        setLabel: function(label) {
+            this.app.workflow.updateNodeLabel(this.label, label);
+            this.label = label || null;
+        },
         init_field_data : function ( data ) {
             if ( data.type ) {
                 this.type = data.type;
@@ -118,7 +139,7 @@ define(['mvc/workflow/workflow-view-node'], function( NodeView ) {
             this.tooltip = data.tooltip ? data.tooltip : "";
             this.annotation = data.annotation;
             this.post_job_actions = data.post_job_actions ? data.post_job_actions : {};
-            this.label = data.label;
+            this.setLabel(data.label);
             this.uuid = data.uuid;
             this.workflow_outputs = data.workflow_outputs ? data.workflow_outputs : [];
 
@@ -148,6 +169,8 @@ define(['mvc/workflow/workflow-view-node'], function( NodeView ) {
             this.form_html = data.form_html;
             this.tool_errors = data.tool_errors;
             this.annotation = data['annotation'];
+            this.setLabel(data.label);
+
             if( "post_job_actions" in data ) {
                 // Won't be present in response for data inputs
                 var pja_in = $.parseJSON(data.post_job_actions);
@@ -167,6 +190,7 @@ define(['mvc/workflow/workflow-view-node'], function( NodeView ) {
                 unusedView.el.terminal.destroy();
             } );
             nodeView.terminalViews = newTerminalViews;
+            node.nodeView.render();
             // In general workflow editor assumes tool outputs don't change in # or
             // type (not really valid right?) but adding special logic here for
             // data collection input parameters that can have their collection

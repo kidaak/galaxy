@@ -8,22 +8,16 @@ import shutil
 import struct
 import subprocess
 import tempfile
-import warnings
 import zipfile
 
-from galaxy import eggs
-eggs.require( "bx-python" )
+import pysam
+
 from bx.seq.twobit import TWOBIT_MAGIC_NUMBER, TWOBIT_MAGIC_NUMBER_SWAP, TWOBIT_MAGIC_SIZE
 
 from galaxy.datatypes.metadata import MetadataElement, MetadataParameter, ListParameter, DictParameter
 from galaxy.datatypes import metadata
 from galaxy.util import nice_size, sqlite
 from . import data, dataproviders
-
-with warnings.catch_warnings():
-    warnings.simplefilter( "ignore" )
-    eggs.require( "pysam" )
-    from pysam import csamtools
 
 
 log = logging.getLogger(__name__)
@@ -340,7 +334,7 @@ class Bam( Binary ):
         os.unlink( stderr_name )
         # Now use pysam with BAI index to determine additional metadata
         try:
-            bam_file = csamtools.Samfile( filename=dataset.file_name, mode='rb', index_filename=index_file.file_name )
+            bam_file = pysam.AlignmentFile( filename=dataset.file_name, mode='rb', index_filename=index_file.file_name )
             dataset.metadata.reference_names = list( bam_file.references )
             dataset.metadata.reference_lengths = list( bam_file.lengths )
             dataset.metadata.bam_header = bam_file.header
@@ -348,6 +342,8 @@ class Bam( Binary ):
             dataset.metadata.sort_order = dataset.metadata.bam_header.get( 'HD', {} ).get( 'SO', None )
             dataset.metadata.bam_version = dataset.metadata.bam_header.get( 'HD', {} ).get( 'VN', None )
         except:
+            # Per Dan, don't log here because doing so will cause datasets that
+            # fail metadata to end in the error state
             pass
 
     def sniff( self, filename ):
@@ -460,6 +456,40 @@ class Bam( Binary ):
 Binary.register_sniffable_binary_format("bam", "bam", Bam)
 
 
+class CRAM( Binary ):
+    file_ext = "cram"
+    edam_format = "format_3462"
+
+    MetadataElement( name="cram_version", default=None, desc="CRAM Version", param=MetadataParameter, readonly=True, visible=False, optional=False, no_value=None )
+
+    def set_meta( self, dataset, overwrite=True, **kwd ):
+        try:
+            with open(dataset.file_name, "r") as fh:
+                header = fh.read(6)
+                dataset.metadata.cram_version = str(ord(header[4])) + "." + str(ord(header[5]))
+        except Exception as exc:
+            log.warn( '%s, set_meta Exception: %s', self, exc )
+
+    def set_peek( self, dataset, is_multi_byte=False ):
+        if not dataset.dataset.purged:
+            dataset.peek = 'CRAM binary alignment file'
+            dataset.blurb = 'binary data'
+        else:
+            dataset.peek = 'file does not exist'
+            dataset.blurb = 'file purged from disk'
+
+    def sniff( self, filename ):
+        try:
+            header = open( filename ).read(4)
+            if header[0:4] == "CRAM":
+                return True
+            return False
+        except:
+            return False
+
+Binary.register_sniffable_binary_format('cram', 'cram', CRAM)
+
+
 class Bcf( Binary):
     """Class describing a BCF file"""
     edam_format = "format_3020"
@@ -510,12 +540,36 @@ Binary.register_sniffable_binary_format("bcf", "bcf", Bcf)
 
 
 class H5( Binary ):
-    """Class describing an HDF5 file"""
+    """
+    Class describing an HDF5 file
+
+    >>> from galaxy.datatypes.sniff import get_test_fname
+    >>> fname = get_test_fname( 'test.mz5' )
+    >>> H5().sniff( fname )
+    True
+    >>> fname = get_test_fname( 'interval.interval' )
+    >>> H5().sniff( fname )
+    False
+    """
     file_ext = "h5"
+
+    def __init__( self, **kwd ):
+        Binary.__init__( self, **kwd )
+        self._magic = binascii.unhexlify("894844460d0a1a0a")
+
+    def sniff( self, filename ):
+        # The first 8 bytes of any hdf5 file are 0x894844460d0a1a0a
+        try:
+            header = open( filename ).read(8)
+            if header == self._magic:
+                return True
+            return False
+        except:
+            return False
 
     def set_peek( self, dataset, is_multi_byte=False ):
         if not dataset.dataset.purged:
-            dataset.peek = "Binary h5 file"
+            dataset.peek = "Binary HDF5 file"
             dataset.blurb = nice_size( dataset.get_size() )
         else:
             dataset.peek = 'file does not exist'
@@ -525,9 +579,9 @@ class H5( Binary ):
         try:
             return dataset.peek
         except:
-            return "Binary h5 sequence file (%s)" % ( nice_size( dataset.get_size() ) )
+            return "Binary HDF5 file (%s)" % ( nice_size( dataset.get_size() ) )
 
-Binary.register_unsniffable_binary_ext("h5")
+Binary.register_sniffable_binary_format("h5", "h5", H5)
 
 
 class Scf( Binary ):
@@ -817,8 +871,84 @@ class GeminiSQLite( SQlite ):
         except:
             return "Gemini SQLite Database, version %s" % ( dataset.metadata.gemini_version or 'unknown' )
 
+
+class MzSQlite( SQlite ):
+    """Class describing a Proteomics Sqlite database """
+    file_ext = "mz.sqlite"
+
+    def set_meta( self, dataset, overwrite=True, **kwd ):
+        super( MzSQlite, self ).set_meta( dataset, overwrite=overwrite, **kwd )
+
+    def sniff( self, filename ):
+        if super( MzSQlite, self ).sniff( filename ):
+            mz_table_names = ["DBSequence", "Modification", "Peaks", "Peptide", "PeptideEvidence", "Score", "SearchDatabase", "Source", "SpectraData", "Spectrum", "SpectrumIdentification"]
+            try:
+                conn = sqlite.connect( filename )
+                c = conn.cursor()
+                tables_query = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+                result = c.execute( tables_query ).fetchall()
+                result = map( lambda x: x[0], result )
+                for table_name in mz_table_names:
+                    if table_name not in result:
+                        return False
+                return True
+            except Exception, e:
+                log.warn( '%s, sniff Exception: %s', self, e )
+        return False
+
+
+class IdpDB( SQlite ):
+    """
+    Class describing an IDPicker 3 idpDB (sqlite) database
+
+    >>> from galaxy.datatypes.sniff import get_test_fname
+    >>> fname = get_test_fname( 'test.idpDB' )
+    >>> IdpDB().sniff( fname )
+    True
+    >>> fname = get_test_fname( 'interval.interval' )
+    >>> IdpDB().sniff( fname )
+    False
+    """
+    file_ext = "idpdb"
+
+    def set_meta( self, dataset, overwrite=True, **kwd ):
+        super( IdpDB, self ).set_meta( dataset, overwrite=overwrite, **kwd )
+
+    def sniff( self, filename ):
+        if super( IdpDB, self ).sniff( filename ):
+            mz_table_names = ["About", "Analysis", "AnalysisParameter", "PeptideSpectrumMatch", "Spectrum", "SpectrumSource"]
+            try:
+                conn = sqlite.connect( filename )
+                c = conn.cursor()
+                tables_query = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+                result = c.execute( tables_query ).fetchall()
+                result = map( lambda x: x[0], result )
+                for table_name in mz_table_names:
+                    if table_name not in result:
+                        return False
+                return True
+            except Exception, e:
+                log.warn( '%s, sniff Exception: %s', self, e )
+        return False
+
+    def set_peek( self, dataset, is_multi_byte=False ):
+        if not dataset.dataset.purged:
+            dataset.peek = "IDPickerDB SQLite file"
+            dataset.blurb = nice_size( dataset.get_size() )
+        else:
+            dataset.peek = 'file does not exist'
+            dataset.blurb = 'file purged from disk'
+
+    def display_peek( self, dataset ):
+        try:
+            return dataset.peek
+        except:
+            return "IDPickerDB SQLite file (%s)" % ( nice_size( dataset.get_size() ) )
+
 Binary.register_sniffable_binary_format( "gemini.sqlite", "gemini.sqlite", GeminiSQLite )
-# FIXME: We need to register gemini.sqlite before sqlite, since register_sniffable_binary_format and is_sniffable_binary called in upload.py
+Binary.register_sniffable_binary_format( "idpdb", "idpdb", IdpDB )
+Binary.register_sniffable_binary_format( "mz.sqlite", "mz.sqlite", MzSQlite )
+# FIXME: We need to register specialized sqlite formats before sqlite, since register_sniffable_binary_format and is_sniffable_binary called in upload.py
 # ignores sniff order declared in datatypes_conf.xml
 Binary.register_sniffable_binary_format("sqlite", "sqlite", SQlite)
 
@@ -1053,3 +1183,56 @@ class OxliGraphLabels(OxliBinary):
 
 Binary.register_sniffable_binary_format("oxli.graphlabels", "oxligl",
                                         OxliGraphLabels)
+
+
+class SearchGuiArchive ( CompressedArchive ):
+    """Class describing a SearchGUI archive """
+    MetadataElement( name="searchgui_version", default='1.28.0' , param=MetadataParameter, desc="SearchGui Version",
+                     readonly=True, visible=True, no_value=None )
+    MetadataElement( name="searchgui_major_version", default='1' , param=MetadataParameter, desc="SearchGui Major Version",
+                     readonly=True, visible=True, no_value=None )
+    file_ext = "searchgui_archive"
+
+    def set_meta( self, dataset, overwrite=True, **kwd ):
+        super( SearchGuiArchive, self ).set_meta( dataset, overwrite=overwrite, **kwd )
+        try:
+            if dataset and zipfile.is_zipfile( dataset.file_name ):
+                tempzip = zipfile.ZipFile( dataset.file_name )
+                if 'searchgui.properties' in tempzip.namelist():
+                    fh = tempzip.open('searchgui.properties')
+                    for line in fh:
+                        if line.startswith('searchgui.version'):
+                            version = line.split('=')[1].strip()
+                            dataset.metadata.searchgui_version = version
+                            dataset.metadata.searchgui_major_version = version.split('.')[0]
+                    fh.close()
+                tempzip.close()
+        except Exception as e:
+            log.warn( '%s, set_meta Exception: %s', self, e )
+
+    def sniff( self, filename ):
+        try:
+            if filename and zipfile.is_zipfile( filename ):
+                tempzip = zipfile.ZipFile( filename, 'r' )
+                is_searchgui = 'searchgui.properties' in tempzip.namelist()
+                tempzip.close()
+                return is_searchgui
+        except Exception as e:
+            log.warn( '%s, sniff Exception: %s', self, e )
+        return False
+
+    def set_peek( self, dataset, is_multi_byte=False ):
+        if not dataset.dataset.purged:
+            dataset.peek = "SearchGUI Archive, version %s" % ( dataset.metadata.searchgui_version or 'unknown' )
+            dataset.blurb = nice_size( dataset.get_size() )
+        else:
+            dataset.peek = 'file does not exist'
+            dataset.blurb = 'file purged from disk'
+
+    def display_peek( self, dataset ):
+        try:
+            return dataset.peek
+        except:
+            return "SearchGUI Archive, version %s" % ( dataset.metadata.searchgui_version or 'unknown' )
+
+Binary.register_sniffable_binary_format("searchgui_archive", "searchgui_archive", SearchGuiArchive)

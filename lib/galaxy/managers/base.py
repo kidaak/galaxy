@@ -25,12 +25,7 @@ attribute change to a model object.
 #   instead of the three separate classes. With no 'apparent' perfect scheme
 #   I'm opting to just keep them separate.
 
-import pkg_resources
-pkg_resources.require( "SQLAlchemy >= 0.4" )
 import sqlalchemy
-
-pkg_resources.require("repoze.lru")  # used by Routes
-pkg_resources.require("Routes")
 import routes
 
 from galaxy import exceptions
@@ -117,6 +112,16 @@ def get_class( class_name ):
     return item_class
 
 
+def decode_id(app, id):
+    try:
+        # note: use str - occasionally a fully numeric id will be placed in post body and parsed as int via JSON
+        #   resulting in error for valid id
+        return app.security.decode_id( str( id ) )
+    except ( ValueError, TypeError ):
+        msg = "Malformed id ( %s ) specified, unable to decode" % ( str( id ) )
+        raise exceptions.MalformedId( msg, id=str( id ) )
+
+
 def get_object( trans, id, class_name, check_ownership=False, check_accessible=False, deleted=None ):
     """
     Convenience method to get a model object with the specified checks. This is
@@ -124,11 +129,7 @@ def get_object( trans, id, class_name, check_ownership=False, check_accessible=F
     controller mixin code - however whenever possible the managers for a
     particular model should be used to load objects.
     """
-    try:
-        decoded_id = trans.security.decode_id( id )
-    except:
-        raise exceptions.MessageException( "Malformed %s id ( %s ) specified, unable to decode"
-                                           % ( class_name, str( id ) ), type='error' )
+    decoded_id = decode_id(trans.app, id)
     try:
         item_class = get_class( class_name )
         assert item_class is not None

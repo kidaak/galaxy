@@ -6,6 +6,12 @@
 // dependencies
 define([], function() {
 
+/** Builds a basic iframe
+*/
+function iframe( src ) {
+    return '<iframe src="' + src + '" frameborder="0" style="width: 100%; height: 100%;"/>';
+}
+
 /** Traverse through json
 */
 function deepeach(dict, callback) {
@@ -175,7 +181,7 @@ function cssGetAttribute (classname, name) {
  */
 function cssLoadFile (url) {
     if (!$('link[href^="' + url + '"]').length) {
-        $('<link href="' + galaxy_config.root + url + '" rel="stylesheet">').appendTo('head');
+        $('<link href="' + Galaxy.root + url + '" rel="stylesheet">').appendTo('head');
     }
 };
 
@@ -262,6 +268,7 @@ return {
     cssGetAttribute: cssGetAttribute,
     get: get,
     merge: merge,
+    iframe: iframe,
     bytesToString: bytesToString,
     uid: uid,
     time: time,

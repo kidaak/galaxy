@@ -11,24 +11,14 @@
 
     ${parent.javascripts()}
 
-    <!--[if lt IE 9]>
-      <script type='text/javascript' src="${h.url_for('/static/scripts/libs/IE/excanvas.js')}"></script>
-    <![endif]-->
-    <!--[if lt IE 7]>
-      <script type='text/javascript'>
-        window.lt_ie_7 = true;
-      </script>
-    <![endif]-->
-
-    ${h.js( "libs/jquery/jquery.event.drag",
-            "libs/jquery/jquery.event.drop",
-            "libs/jquery/jquery.event.hover",
-            "libs/jquery/jquery.form",
-            "libs/jquery/jstorage",
-            "libs/jquery/jquery-ui",
-            "libs/jquery/jquery.autocomplete",
-            "galaxy.autocom_tagging",
-            "libs/bibtex" )}
+    ${h.js(
+        "libs/jquery/jquery.event.drag",
+        "libs/jquery/jquery.event.drop",
+        "libs/jquery/jquery.event.hover",
+        "libs/jquery/jquery.form",
+        "libs/jquery/jstorage",
+        "libs/jquery/jquery.autocomplete",
+    )}
 
     <script type='text/javascript'>
         workflow_view = null;
@@ -259,6 +249,24 @@
                       "<div class='progress progress-striped progress-info active'><div class='progress-bar' style='width: 100%;'></div></div>", self.overlay_visible )}
 </%def>
 
+
+<%def name="render_module_section(module_section)">
+    <div class="toolSectionTitle" id="title___workflow__${module_section['name']}__">
+        <span>${module_section["title"]}</span>
+    </div>
+    <div id="__workflow__${module_section['name']}__" class="toolSectionBody">
+        <div class="toolSectionBg">
+            %for module in module_section["modules"]:
+                <div class="toolTitle">
+                    <a href="#" onclick="workflow_view.add_node_for_module( '${module['name']}', '${module['title']}' )">
+                        ${module['description']}
+                    </a>
+                </div>
+            %endfor
+        </div>
+    </div>
+</%def>
+
 <%def name="left_panel()">
     <%
        from galaxy.tools import Tool
@@ -272,11 +280,20 @@
     </div>
 
     <div class="unified-panel-body" style="overflow: auto;">
-            <div class="toolMenu">
+        <div class="toolMenu">
+            <%
+                from galaxy.workflow.modules import load_module_sections
+                module_sections = load_module_sections( trans )
+            %>
             <div id="tool-search" style="padding-bottom: 5px; position: relative; display: block; width: 100%">
                 <input type="text" name="query" placeholder="search tools" id="tool-search-query" class="search-query parent-width" />
                 <img src="${h.url_for('/static/images/loading_small_white_bg.gif')}" id="search-spinner" class="search-spinner" />
             </div>
+
+            <div class="toolSectionWrapper">
+                ${render_module_section(module_sections['inputs'])}
+            </div>
+
             <div class="toolSectionList">
                 %for val in app.toolbox.tool_panel_contents( trans ):
                     <div class="toolSectionWrapper">
@@ -321,35 +338,20 @@
                 %endif
                 ## End Data Manager Tools
             </div>
+            <div>&nbsp;</div>
+            %for section_name, module_section in module_sections.items():
+                %if section_name != "inputs":
+                    ${render_module_section(module_section)}
+                %endif
+            %endfor
+
             ## Feedback when search returns no results.
             <div id="search-no-results" style="display: none; padding-top: 5px">
                 <em><strong>Search did not match any tools.</strong></em>
             </div>
-            <div>&nbsp;</div>
 
-            <div class="toolMenuGroupHeader">Workflow control</div>
-            <%
-                from galaxy.workflow.modules import load_module_sections
-            %>
-            %for module_section in load_module_sections( trans ):
-                <% section_title = module_section["title"] %>
-                <% section_name = module_section["name"] %>
-                <div class="toolSectionTitle" id="title___workflow__${section_name}__">
-                <span>${section_title}</span>
-                </div>
-                <div id="__workflow__${section_name}__" class="toolSectionBody">
-                <div class="toolSectionBg">
-                %for module in module_section["modules"]:
-                    <div class="toolTitle">
-                        <a href="#" onclick="workflow_view.add_node_for_module( '${module['name']}', '${module['title']}' )">${module['description']}</a>
-                    </div><!-- end toolTitle -->
-                %endfor
-                </div>
-                </div>
-            %endfor
         </div>
     </div>
-
 </%def>
 
 <%def name="center_panel()">

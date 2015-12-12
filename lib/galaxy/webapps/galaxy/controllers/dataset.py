@@ -2,12 +2,8 @@ import logging
 import os
 import urllib
 
-from galaxy import eggs
-eggs.require( "MarkupSafe" )
 from markupsafe import escape
-eggs.require( "Paste" )
 import paste.httpexceptions
-eggs.require('SQLAlchemy')
 from sqlalchemy import false, true
 
 from galaxy import datatypes, model, util, web
@@ -523,7 +519,7 @@ class DatasetInterface( BaseUIController, UsesAnnotations, UsesItemRatings, Uses
         """ Import another user's dataset via a shared URL; dataset is added to user's current history. """
         # Set referer message.
         referer = trans.request.referer
-        if referer is not "":
+        if referer:
             referer_message = "<a href='%s'>return to the previous page</a>" % escape(referer)
         else:
             referer_message = "<a href='%s'>go to Galaxy's start page</a>" % url_for( '/' )
@@ -899,7 +895,7 @@ class DatasetInterface( BaseUIController, UsesAnnotations, UsesItemRatings, Uses
             # HDA is purgeable
             # Decrease disk usage first
             if user:
-                user.total_disk_usage -= hda.quota_amount( user )
+                user.adjust_total_disk_usage(-hda.quota_amount(user))
             # Mark purged
             hda.purged = True
             trans.sa_session.add( hda )

@@ -6,6 +6,8 @@ define([
     "utils/localization"
 ], function( LIST_ITEM, STATES, faIconButton, BASE_MVC, _l ){
 /* global Backbone */
+
+var logNamespace = 'dataset';
 /*==============================================================================
 TODO:
     straighten out state rendering and templates used
@@ -19,9 +21,7 @@ var _super = LIST_ITEM.ListItemView;
  */
 var DatasetListItemView = _super.extend(
 /** @lends DatasetListItemView.prototype */{
-
-    /** logger used to record this.log messages, commonly set to console */
-    //logger      : console,
+    _logNamespace : logNamespace,
 
     className   : _super.prototype.className + " dataset",
     //TODO:?? doesn't exactly match an hda's type_id
@@ -267,7 +267,7 @@ var DatasetListItemView = _super.extend(
         }
 
         return $([
-            '<a class="download-btn icon-btn" href="', this.model.urls.download, '" title="' + _l( 'Download' ) + '">',
+            '<a class="download-btn icon-btn" href="', this.model.urls.download, '" title="' + _l( 'Download' ) + '" download>',
                 '<span class="fa fa-floppy-o"></span>',
             '</a>'
         ].join( '' ));
@@ -283,7 +283,7 @@ var DatasetListItemView = _super.extend(
                     '<span class="fa fa-floppy-o"></span>',
                 '</a>',
                 '<ul class="dropdown-menu" role="menu" aria-labelledby="dLabel">',
-                    '<li><a href="' + urls.download + '">', _l( 'Download dataset' ), '</a></li>',
+                    '<li><a href="' + urls.download + '" download>', _l( 'Download dataset' ), '</a></li>',
                     _.map( this.model.get( 'meta_files' ), function( meta_file ){
                         return [
                             '<li><a href="', urls.meta_download + meta_file.file_type, '">',

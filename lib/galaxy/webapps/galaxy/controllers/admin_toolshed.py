@@ -2,8 +2,6 @@ import logging
 import os
 import shutil
 
-from galaxy import eggs
-eggs.require('SQLAlchemy')
 from sqlalchemy import false, or_
 
 import tool_shed.repository_types.util as rt_util
@@ -505,7 +503,7 @@ class AdminToolshed( AdminGalaxy ):
         if err_msg:
             message += err_msg
             status = 'error'
-        message += "Installed tool dependencies: %s" % ','.join( td.name for td in installed_tool_dependencies )
+        message += "Installed tool dependencies: %s" % ', '.join( td.name for td in installed_tool_dependencies )
         td_ids = [ trans.security.encode_id( td.id ) for td in tool_shed_repository.tool_dependencies ]
         return trans.response.send_redirect( web.url_for( controller='admin_toolshed',
                                                           action='manage_tool_dependencies',
@@ -1296,6 +1294,21 @@ class AdminToolshed( AdminGalaxy ):
                 # Just in case the tool_section.id differs from tool_panel_section_id, which it shouldn't...
                 tool_panel_section_id = str( tool_section.id )
         if tool_shed_repository.status == trans.install_model.ToolShedRepository.installation_status.UNINSTALLED:
+            repository_type = suc.get_repository_type_from_tool_shed(trans.app,
+                                                                     tool_shed_url,
+                                                                     tool_shed_repository.name,
+                                                                     tool_shed_repository.owner)
+            if repository_type == rt_util.TOOL_DEPENDENCY_DEFINITION:
+                # Repositories of type tool_dependency_definition must get the latest
+                # metadata from the Tool Shed since they have only a single installable
+                # revision.
+                raw_text = suc.get_tool_dependency_definition_metadata_from_tool_shed(trans.app,
+                                                                                      tool_shed_url,
+                                                                                      tool_shed_repository.name,
+                                                                                      tool_shed_repository.owner)
+                new_meta = json.loads(raw_text)
+                # Clean up old repository dependency and tool dependency relationships.
+                suc.clean_dependency_relationships(trans, new_meta, tool_shed_repository, tool_shed_url)
             # The repository's status must be updated from 'Uninstalled' to 'New' when initiating reinstall
             # so the repository_installation_updater will function.
             tool_shed_repository = suc.create_or_update_tool_shed_repository( trans.app,
@@ -1906,8 +1919,8 @@ class AdminToolshed( AdminGalaxy ):
                             if new_repository_dependencies == original_repository_dependencies:
                                 for new_repository_tup in new_repository_dependencies:
                                     # Make sure all dependencies are installed.
-                                    # TODO: Repository dependencies that are not installed should be displayed to to the user,
-                                    # giving them the option to install them or now.  This is the same behavior as when initially
+                                    # TODO: Repository dependencies that are not installed should be displayed to the user,
+                                    # giving them the option to install them or not. This is the same behavior as when initially
                                     # installing and when re-installing.
                                     new_tool_shed, new_name, new_owner, new_changeset_revision, new_pir, new_oicct = \
                                         common_util.parse_repository_dependency_tuple( new_repository_tup )
